@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.routes import router
 import ollama
 
 app = FastAPI(title="Research Agent API")
@@ -26,3 +27,4 @@ def health_llm():
         return {"status": "ok", "model": "qwen3:8b", "reply": response["message"]["content"]}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+app.include_router(router)
