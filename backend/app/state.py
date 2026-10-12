@@ -5,8 +5,7 @@ class ResearchState(TypedDict, total=False):
     """
     Shared state threaded through every node in the LangGraph graph.
     `total=False`: fields are populated incrementally, not all present
-    at every point in a run. Read with .get(), never direct indexing,
-    unless an earlier node in the same path is guaranteed to have run.
+    at every point in a run. Read with .get().
     """
 
     run_id: str
@@ -14,36 +13,30 @@ class ResearchState(TypedDict, total=False):
 
     objective: str
 
-    # ALL research questions ever asked, across every round (original +
-    # every gap-filling round). Grows over time, never overwritten.
-    # This is what gets shown to the user as "the plan."
+    # ALL research questions ever asked, across every round. Never overwritten.
     research_questions: List[str]
 
-    # Only the CURRENT round's questions — what decide_sources_node and
-    # the research nodes should actually act on this pass. Replaced each
-    # round (by plan_node initially, by prepare_next_round_node after).
+    # Only the CURRENT round's questions. Replaced each round.
     active_questions: List[str]
 
-    # Accumulates across rounds (merged dict, never wholesale replaced) —
-    # routing decisions for every question ever asked, not just the
-    # current round's.
+    # CUMULATIVE: every source type each question has been routed to (tried).
     source_decisions: Dict[str, List[str]]
 
-    # Accumulated across research_web / research_docs / research_github,
-    # across every round. Each item: {"question", "source_type",
-    # "source_title", "source_url", "claim"}
+    # THIS ROUND only: which sources to run for each active question.
+    # Replaced every round by decide_sources_node.
+    round_sources: Dict[str, List[str]]
+
+    # Accumulated across all research nodes and rounds. Each item:
+    # {"question", "source_type", "source_title", "source_url", "claim", "quote"}
     evidence: List[dict]
     research_warnings: List[str]
 
-    # Set by evaluate_sufficiency_node each time it runs (reflects the
-    # LATEST judgment, not accumulated).
     sufficient: bool
     gap_questions: List[str]
 
-    # Starts absent (treated as 0). Incremented by prepare_next_round_node
-    # each time the loop fires. Used to enforce the bounded-loop cap.
+    # Absent == 0. Incremented by prepare_next_round_node.
     research_iteration: int
 
-    error: Optional[str]
+    report: dict
 
-    # Future phases will add: report
+    error: Optional[str]

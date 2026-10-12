@@ -29,7 +29,7 @@ def start_research(payload: ResearchRequest):
         run_id=run_id,
         status="research_complete",
         query=payload.query,
-        message="Research plan, source routing, and evidence gathered.",
+        message="Research complete. Report generated from the gathered evidence.",
         plan=Plan(
             objective=final_state["objective"],
             research_questions=final_state["research_questions"],
@@ -39,4 +39,5 @@ def start_research(payload: ResearchRequest):
         warnings=final_state.get("research_warnings"),
         sufficient=final_state.get("sufficient"),
         research_rounds=final_state.get("research_iteration", 0) + 1,
+        report=final_state.get("report"),
     )

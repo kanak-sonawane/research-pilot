@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ReportView, { type Report } from "@/components/ReportView";
 
 type RunStatus = "idle" | "loading" | "success" | "error";
 
@@ -15,6 +16,7 @@ interface EvidenceItem {
   source_title: string;
   source_url: string;
   claim: string;
+  quote?: string;
 }
 
 interface ResearchRunResponse {
@@ -28,6 +30,7 @@ interface ResearchRunResponse {
   warnings: string[] | null;
   sufficient: boolean | null;
   research_rounds: number | null;
+  report: Report | null;
 }
 
 const API_BASE_URL =
@@ -81,7 +84,7 @@ export default function ResearchForm() {
     result?.evidence?.filter((e) => e.question === question) ?? [];
 
   return (
-    <div className="w-full max-w-xl flex flex-col gap-4">
+    <div className="w-full max-w-3xl flex flex-col gap-4">
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <label htmlFor="research-query" className="font-medium text-gray-900">
           Technical research topic
@@ -93,11 +96,7 @@ export default function ResearchForm() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="e.g. How does LangGraph handle cyclic workflows?"
           className="border rounded px-3 py-2 text-gray-900 placeholder:text-gray-400 bg-white"
-          // Forces the native input to stay on light form-control styling
-          // regardless of OS/browser dark mode. Without this, browsers
-          // that auto-apply a dark `color-scheme` to inputs render the
-          // typed text in a dark color against a dark background —
-          // unreadable, even though our own Tailwind classes are correct.
+          // Keeps the native input on light styling regardless of OS dark mode.
           style={{ colorScheme: "light" }}
           disabled={status === "loading"}
         />
@@ -125,7 +124,7 @@ export default function ResearchForm() {
               <strong>Research rounds:</strong> {result.research_rounds}
               {result.sufficient !== null && (
                 <span className="text-gray-500">
-                  {" "}({result.sufficient ? "evidence judged sufficient" : "stopped at round cap"})
+                  {" "}({result.sufficient ? "evidence judged sufficient" : "some questions unanswered or round limit reached"})
                 </span>
               )}
             </p>
@@ -140,15 +139,19 @@ export default function ResearchForm() {
             </div>
           )}
 
-          {result.plan ? (
-            <>
-              <div>
-                <strong>Objective</strong>
-                <p className="mt-1">{result.plan.objective}</p>
-              </div>
+          {result.status === "failed" && (
+            <p className="text-red-600">{result.message}</p>
+          )}
 
-              <div className="flex flex-col gap-3">
-                <strong>Research Questions & Evidence</strong>
+          {result.report && <ReportView report={result.report} />}
+
+          {result.plan && (
+            <details>
+              <summary className="cursor-pointer font-semibold">
+                Raw evidence by research question
+              </summary>
+              <div className="flex flex-col gap-3 mt-2">
+                <p><strong>Objective:</strong> {result.plan.objective}</p>
                 {result.plan.research_questions.map((q, i) => (
                   <div key={i} className="border-l-2 border-gray-300 pl-3">
                     <p className="font-medium">
@@ -179,14 +182,12 @@ export default function ResearchForm() {
                         ))}
                       </ul>
                     ) : (
-                      <p className="text-gray-500 mt-1">No evidence gathered yet.</p>
+                      <p className="text-gray-500 mt-1">No evidence gathered.</p>
                     )}
                   </div>
                 ))}
               </div>
-            </>
-          ) : (
-            <p className="text-red-600">{result.message}</p>
+            </details>
           )}
         </div>
       )}

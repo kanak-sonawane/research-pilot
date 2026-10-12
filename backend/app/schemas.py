@@ -17,7 +17,6 @@ class ResearchRequest(BaseModel):
 
 class Plan(BaseModel):
     objective: str
-    # Full history across all rounds — see ResearchState.research_questions.
     research_questions: List[str]
 
 
@@ -27,6 +26,69 @@ class EvidenceItem(BaseModel):
     source_title: str
     source_url: str
     claim: str
+    quote: str = ""
+
+
+# ---- Report (Phase 7) ----------------------------------------------------
+
+class ReportFinding(BaseModel):
+    statement: str
+    evidence_ids: List[str]
+
+
+class FindingsSubsection(BaseModel):
+    heading: str
+    findings: List[ReportFinding]
+
+
+class ArchitectureGroup(BaseModel):
+    name: str
+    description: str = ""
+    items: List[str] = []
+
+
+class ReportEvidence(BaseModel):
+    id: str
+    claim: str
+    quote: str = ""
+    question: str
+    source_id: str
+    source_type: str
+
+
+class ReportSource(BaseModel):
+    id: str
+    title: str
+    url: str
+    source_types: List[str]
+
+
+class Methodology(BaseModel):
+    objective: str
+    research_questions: List[str]
+    source_categories_searched: List[str]
+    source_categories_with_evidence: List[str]
+    tools_used: List[str]
+    search_strategy: str
+    source_selection_approach: str
+    research_rounds: int
+    limitations: List[str]
+
+
+class ValidationResult(BaseModel):
+    passed: bool
+    issues: List[str]
+    dropped_findings: int
+
+
+class Report(BaseModel):
+    findings: List[FindingsSubsection]
+    information_architecture: List[ArchitectureGroup]
+    methodology: Methodology
+    sources: List[ReportSource]
+    evidence: List[ReportEvidence]
+    unanswered_questions: List[str]
+    validation: ValidationResult
 
 
 class ResearchRunResponse(BaseModel):
@@ -38,8 +100,6 @@ class ResearchRunResponse(BaseModel):
     source_decisions: Optional[Dict[str, List[str]]] = None
     evidence: Optional[List[EvidenceItem]] = None
     warnings: Optional[List[str]] = None
-    # New in Phase 6:
     sufficient: Optional[bool] = None
-    # How many research rounds actually ran (1 = no looping occurred,
-    # 2+ = the sufficiency loop fired at least once).
     research_rounds: Optional[int] = None
+    report: Optional[Report] = None

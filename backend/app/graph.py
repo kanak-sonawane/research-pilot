@@ -1,33 +1,41 @@
 import concurrent.futures
+import time
+from typing import Dict, List
 
 from langgraph.graph import StateGraph, END
 
+from app.config import MAX_RESEARCH_ROUNDS
 from app.state import ResearchState
+from app.llm_service import LLMError
 from app.planning import generate_plan, PlanningError
 from app.source_decision import decide_sources, SourceDecisionError
 from app.web_research import research_question_web, ResearchError
 from app.docs_research import research_question_docs
 from app.github_research import research_question_github
 from app.evaluation import evaluate_sufficiency, EvaluationError
+from app.report import generate_report
 
-# Hard cap on extra research rounds beyond the first. This is the bounded-
-# loop guarantee the PRD requires: no matter how often evaluate_sufficiency
-# judges the evidence insufficient, the graph will reach END once this many
-# additional rounds have run, with whatever evidence exists at that point.
-MAX_RESEARCH_ROUNDS = 2
-
-# Bounds how many questions' research runs concurrently per source-type
-# node. Kept modest (not "as many as possible") for two reasons: a local
-# Ollama instance can only usefully handle a limited number of concurrent
-# generate requests before they start queuing anyway (depends on hardware
-# and OLLAMA_NUM_PARALLEL), and external APIs (Tavily, GitHub) have their
-# own rate limits that many simultaneous requests could trip.
+# How many questions' research runs concurrently per source-type node.
+# (Network searches overlap; LLM calls are serialized by llm_service.)
 MAX_WORKERS = 3
+
+# Every source type a question can be tried on.
+SOURCES = ("web", "docs", "github")
+
+
+def _timed(name: str, fn):
+    """Wraps a node so each run prints how long it took."""
+
+    def wrapper(state):
+        started = time.perf_counter()
+        result = fn(state)
+        print(f"[node] {name}: {time.perf_counter() - started:.1f}s", flush=True)
+        return result
+
+    return wrapper
 
 
 def plan_node(state: ResearchState) -> dict:
-    """Entry node. Sets BOTH research_questions (full history) and
-    active_questions (this round's work) to the same initial list."""
     try:
         plan = generate_plan(state["query"])
         return {
@@ -35,54 +43,53 @@ def plan_node(state: ResearchState) -> dict:
             "research_questions": plan["research_questions"],
             "active_questions": plan["research_questions"],
         }
-    except PlanningError as e:
+    except (PlanningError, LLMError) as e:
         return {"error": f"Planning failed: {e}"}
 
 
 def decide_sources_node(state: ResearchState) -> dict:
     """
-    Routes sources for THIS round's active_questions only, then merges
-    the result into the accumulated source_decisions dict rather than
-    replacing it — so routing decisions from earlier rounds aren't lost
-    when a later round only routes its own (smaller) set of questions.
+    Decides which sources to run THIS round (round_sources) and keeps a
+    cumulative record of everything tried (source_decisions).
+
+    - A new question is routed by the LLM, as before.
+    - A question that has already been researched (a retry) is NOT re-routed
+      by the LLM and NOT repeated on the same sources: it only gets sources it
+      hasn't been tried on yet. Repeating an identical search almost always
+      returns the same empty result, so it only burns time.
     """
     if state.get("error"):
         return {}
-    try:
-        new_decisions = decide_sources(state["active_questions"])
-        merged = dict(state.get("source_decisions", {}))
-        merged.update(new_decisions)
-        return {"source_decisions": merged}
-    except SourceDecisionError as e:
-        return {"error": f"Source decision failed: {e}"}
+
+    active = state.get("active_questions", [])
+    previous: Dict[str, List[str]] = state.get("source_decisions", {})
+
+    round_sources: Dict[str, List[str]] = {}
+    to_route: List[str] = []
+    for q in active:
+        if q in previous:
+            round_sources[q] = [s for s in SOURCES if s not in previous[q]]
+        else:
+            to_route.append(q)
+
+    if to_route:
+        try:
+            round_sources.update(decide_sources(to_route))
+        except (SourceDecisionError, LLMError) as e:
+            return {"error": f"Source decision failed: {e}"}
+
+    merged = {q: list(srcs) for q, srcs in previous.items()}
+    for q, srcs in round_sources.items():
+        merged[q] = list(dict.fromkeys(merged.get(q, []) + srcs))
+
+    return {"source_decisions": merged, "round_sources": round_sources}
 
 
 def _build_research_node(source_type: str, research_fn):
     """
-    Iterates `active_questions` (NOT all of source_decisions) so each
-    round only researches its own questions, not every question ever
-    asked across the whole run — source_decisions accumulates historical
-    routing, but re-researching already-covered questions every loop
-    would waste calls and duplicate evidence.
-
-    Questions routed to this source type are researched CONCURRENTLY via
-    a thread pool, not one at a time in a loop. Each question's research
-    (a search call + an LLM extraction call, and for github an extra
-    query-reformulation call) is completely independent of every other
-    question's — nothing about researching question A depends on having
-    already finished question B. Previously N questions took roughly N
-    times one question's worth of sequential wall-clock time; now they
-    take roughly 1x, bounded by MAX_WORKERS. This is a pure latency
-    optimization — it changes nothing about what gets searched, what
-    gets extracted, or what evidence looks like; only how much wall-clock
-    time it takes to gather it.
-
-    Thread-safety note: each thread only calls research_fn(question),
-    which does its own independent network/LLM calls and returns a
-    result — no shared mutable state is touched inside the threads.
-    Results are merged into `evidence`/`warnings` only in the main
-    thread, after each future completes, so there's no concurrent
-    write hazard on those lists.
+    Researches this round's questions routed to `source_type`, concurrently.
+    Worker threads only call research_fn; results are merged into the lists in
+    the main thread, so no shared state is mutated concurrently.
     """
 
     def node(state: ResearchState) -> dict:
@@ -90,14 +97,13 @@ def _build_research_node(source_type: str, research_fn):
             return {}
 
         active_questions = state.get("active_questions", [])
-        source_decisions = state.get("source_decisions", {})
+        round_sources = state.get("round_sources", {})
         evidence = list(state.get("evidence", []))
         warnings = list(state.get("research_warnings", []))
 
         questions_to_research = [
-            q for q in active_questions if source_type in source_decisions.get(q, [])
+            q for q in active_questions if source_type in round_sources.get(q, [])
         ]
-
         if not questions_to_research:
             return {}
 
@@ -109,7 +115,7 @@ def _build_research_node(source_type: str, research_fn):
                 question = future_to_question[future]
                 try:
                     evidence.extend(future.result())
-                except ResearchError as e:
+                except (ResearchError, LLMError) as e:
                     warnings.append(f"'{question}' ({source_type}): {e}")
 
         result: dict = {"evidence": evidence}
@@ -127,15 +133,27 @@ research_github_node = _build_research_node("github", research_question_github)
 
 def evaluate_sufficiency_node(state: ResearchState) -> dict:
     """
-    Judges whether accumulated evidence satisfies the objective. On
-    evaluation failure itself (not a research failure — the evaluator
-    LLM call/parse failing), this fails SAFE: treats the run as
-    sufficient and stops, rather than looping forever or discarding
-    evidence already gathered. A broken evaluator shouldn't mean the
-    user gets nothing.
+    1. Deterministic check first (no LLM call): which questions still have no
+       evidence? A question is only worth another round if it has a source it
+       hasn't been tried on yet, and the round cap allows it.
+    2. Only when every question has evidence is the LLM evaluator called, to
+       look for deeper gaps. (If questions are unanswered, we already know the
+       answer to "is this sufficient?", so the call would be wasted time.)
     """
     if state.get("error"):
         return {}
+
+    decisions = state.get("source_decisions", {})
+    iteration = state.get("research_iteration", 0)
+    answered = {e.get("question") for e in state.get("evidence", [])}
+    unanswered = [q for q in state.get("research_questions", []) if q not in answered]
+    retryable = [q for q in unanswered if any(s not in decisions.get(q, []) for s in SOURCES)]
+
+    if retryable and iteration < MAX_RESEARCH_ROUNDS:
+        return {"sufficient": False, "gap_questions": retryable[:3]}
+
+    if unanswered:
+        return {"sufficient": False, "gap_questions": []}
 
     try:
         result = evaluate_sufficiency(
@@ -144,35 +162,26 @@ def evaluate_sufficiency_node(state: ResearchState) -> dict:
             state.get("evidence", []),
         )
         return {"sufficient": result["sufficient"], "gap_questions": result["gap_questions"]}
-    except EvaluationError as e:
+    except (EvaluationError, LLMError) as e:
         warnings = list(state.get("research_warnings", []))
         warnings.append(f"Sufficiency evaluation failed, stopping with current evidence: {e}")
         return {"sufficient": True, "gap_questions": [], "research_warnings": warnings}
 
 
 def prepare_next_round_node(state: ResearchState) -> dict:
-    """
-    Only reached when looping back. Promotes gap_questions into
-    active_questions for the next round, and appends them to the
-    cumulative research_questions history. Increments the iteration
-    counter, which route_after_evaluation uses to enforce the cap.
-    """
     gap_questions = state.get("gap_questions", [])
     iteration = state.get("research_iteration", 0) + 1
+    existing = list(state.get("research_questions", []))
+    new_questions = [q for q in gap_questions if q not in existing]
 
     return {
         "research_iteration": iteration,
         "active_questions": gap_questions,
-        "research_questions": list(state.get("research_questions", [])) + gap_questions,
+        "research_questions": existing + new_questions,
     }
 
 
 def route_after_evaluation(state: ResearchState) -> str:
-    """
-    Conditional edge function. LangGraph calls this after
-    evaluate_sufficiency_node and routes to whichever node name is
-    returned (mapped via add_conditional_edges' path_map below).
-    """
     if state.get("error"):
         return "end"
     if state.get("sufficient", True):
@@ -184,26 +193,34 @@ def route_after_evaluation(state: ResearchState) -> str:
     return "loop"
 
 
+def generate_report_node(state: ResearchState) -> dict:
+    if state.get("error"):
+        return {}
+    try:
+        return {"report": generate_report(dict(state))}
+    except Exception as e:  # noqa: BLE001 — last-resort guard, evidence is never discarded
+        warnings = list(state.get("research_warnings", []))
+        warnings.append(f"Report generation failed: {e}")
+        return {"research_warnings": warnings}
+
+
 def build_graph():
     """
     plan -> decide_sources -> research_web -> research_docs -> research_github
           -> evaluate_sufficiency -> [conditional]
-                 "end"  -> END
-                 "loop" -> prepare_next_round -> decide_sources  (cycle back)
-
-    This is the first cyclic part of the graph. The cycle is bounded by
-    MAX_RESEARCH_ROUNDS via route_after_evaluation — no matter what the
-    evaluator decides, the graph cannot loop indefinitely.
+                 "end"  -> generate_report -> END
+                 "loop" -> prepare_next_round -> decide_sources   (bounded cycle)
     """
     graph = StateGraph(ResearchState)
 
-    graph.add_node("plan", plan_node)
-    graph.add_node("decide_sources", decide_sources_node)
-    graph.add_node("research_web", research_web_node)
-    graph.add_node("research_docs", research_docs_node)
-    graph.add_node("research_github", research_github_node)
-    graph.add_node("evaluate_sufficiency", evaluate_sufficiency_node)
+    graph.add_node("plan", _timed("plan", plan_node))
+    graph.add_node("decide_sources", _timed("decide_sources", decide_sources_node))
+    graph.add_node("research_web", _timed("research_web", research_web_node))
+    graph.add_node("research_docs", _timed("research_docs", research_docs_node))
+    graph.add_node("research_github", _timed("research_github", research_github_node))
+    graph.add_node("evaluate_sufficiency", _timed("evaluate_sufficiency", evaluate_sufficiency_node))
     graph.add_node("prepare_next_round", prepare_next_round_node)
+    graph.add_node("generate_report", _timed("generate_report", generate_report_node))
 
     graph.set_entry_point("plan")
     graph.add_edge("plan", "decide_sources")
@@ -215,9 +232,10 @@ def build_graph():
     graph.add_conditional_edges(
         "evaluate_sufficiency",
         route_after_evaluation,
-        {"end": END, "loop": "prepare_next_round"},
+        {"end": "generate_report", "loop": "prepare_next_round"},
     )
     graph.add_edge("prepare_next_round", "decide_sources")
+    graph.add_edge("generate_report", END)
 
     return graph.compile()
 
