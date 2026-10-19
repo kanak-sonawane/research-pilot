@@ -95,9 +95,12 @@ export default function ReportView({ report }: { report: Report }) {
                     <li key={j} className="list-disc ml-5">
                       {f.statement}{" "}
                       {sourceIds.map((sid) => (
-                        <a key={sid} href={`#source-${sid}`} className="text-blue-600 underline mr-1">
-                          [{sid}]
-                        </a>
+                        <span key={sid} className="mr-1">
+                          <a href={`#source-${sid}`} className="text-blue-600 underline">
+                            [{sid}]
+                          </a>
+                          <span className="text-gray-500 text-xs"> {sourceById.get(sid)?.title}</span>
+                        </span>
                       ))}
                       <details className="text-gray-700">
                         <summary className="cursor-pointer text-xs">

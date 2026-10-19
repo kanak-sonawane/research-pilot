@@ -35,6 +35,7 @@ that help answer the question.
 
 Rules:
 - Only extract claims that are actually supported by the provided content. Never add outside knowledge.
+- If the research question names a specific technology, language or library, skip results and claims about a different one, even if they describe a similar concept.
 - Each evidence item must cite exactly one source, by its number, from the provided results.
 - Each evidence item must include a short "quote": a phrase of at most 15 words copied as
   closely as possible from the cited result's text that supports the claim.

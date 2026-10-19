@@ -61,11 +61,15 @@ def decide_sources(research_questions: list[str]) -> dict:
 
     result: dict[str, list[str]] = {}
     for entry in decisions:
+        if not isinstance(entry, dict):
+            continue  # a malformed entry used to crash the run (HTTP 500)
         question = entry.get("question")
         sources = entry.get("sources", [])
-        if not question:
+        if not isinstance(question, str) or not question:
             continue
-        valid_sources = [s for s in sources if s in VALID_SOURCES]
+        if not isinstance(sources, list):
+            sources = []
+        valid_sources = [s for s in sources if isinstance(s, str) and s in VALID_SOURCES]
         result[question] = valid_sources if valid_sources else ["web"]
 
     # Guarantee every original question has an entry, even if the model

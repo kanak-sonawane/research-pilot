@@ -37,7 +37,7 @@ SOURCE_ORDER = ("web", "docs", "github")
 
 TOOL_DESCRIPTIONS = {
     "web": "Tavily web search",
-    "docs": "Tavily web search scoped to official documentation (queries suffixed with 'official documentation')",
+    "docs": "Tavily web search for documentation-style pages (queries suffixed with 'official documentation'; results are labelled by source, not verified as official)",
     "github": "GitHub repository search (LLM-generated keyword query, README retrieval for top results)",
 }
 
@@ -47,11 +47,13 @@ Write the Findings section of a technical research report.
 
 Rules:
 - Use ONLY the provided evidence. Never add outside knowledge.
+- Each evidence item names its source. If the source is about a different technology, language or library than the one the objective is about (for example a Java framework when the objective is about Python), do not use that evidence.
 - Group findings into 2 to 4 subsections with clear, topic-appropriate headings.
 - Keep each statement under 35 words.
 - Each finding is one or two sentences synthesizing one or more evidence items, and MUST list
   the ids of the evidence it relies on, exactly as written (for example "E1").
 - Never write a finding that has no supporting evidence ids.
+- Never claim that something does not exist, is not supported, or is missing unless an evidence item says so explicitly.
 - If evidence from different sources disagrees, state the difference.
 - Respond with ONLY valid JSON, no markdown formatting, no commentary, in this exact shape:
 {"subsections": [{"heading": "...", "findings": [{"statement": "...", "evidence_ids": ["E1", "E2"]}]}]}
@@ -119,6 +121,7 @@ def build_registry(evidence: List[dict]) -> Tuple[List[dict], List[dict]]:
             "question": item.get("question") or "",
             "source_id": source["id"],
             "source_type": source_type,
+            "source_title": source["title"],
         })
 
     return registry, list(sources_by_key.values())
@@ -155,7 +158,7 @@ def synthesize_findings(objective: str, selected: List[dict]) -> List[dict]:
     Raises ValueError / LLMError on failure; the caller falls back.
     """
     evidence_block = "\n".join(
-        f"[{e['id']}] ({e['source_type']}) {e['claim']}" for e in selected
+        f"[{e['id']}] ({e['source_type']}; source: {e.get('source_title', '')}) {e['claim']}" for e in selected
     )
     parsed = call_llm_json(FINDINGS_SYSTEM_PROMPT, f"Objective: {objective}\n\nEvidence:\n{evidence_block}")
 
@@ -289,7 +292,8 @@ def build_methodology(state: dict, registry: List[dict], unanswered: List[str], 
     searched = [s for s in SOURCE_ORDER if s in routed]
     with_evidence = [s for s in SOURCE_ORDER if any(e["source_type"] == s for e in registry)]
 
-    tools = [TOOL_DESCRIPTIONS[s] for s in searched]
+    # Only categories that actually produced evidence are listed as tools used.
+    tools = [TOOL_DESCRIPTIONS[s] for s in with_evidence]
     tools.append(
         f"Local LLM ({OLLAMA_MODEL} via Ollama) for planning, source routing, evidence extraction, "
         "sufficiency evaluation, and report synthesis"
@@ -310,7 +314,9 @@ def build_methodology(state: dict, registry: List[dict], unanswered: List[str], 
 
     limitations = [
         f"Evidence is extracted from search-result excerpts (up to {MAX_CONTENT_CHARS} characters per "
-        "result), not from full pages."
+        "result), not from full pages.",
+        "Whether a source is about the same technology as the question is judged by an LLM and is not "
+        "guaranteed; check the source title shown next to each citation.",
     ]
     if "github" in searched:
         limitations.append(
@@ -320,6 +326,9 @@ def build_methodology(state: dict, registry: List[dict], unanswered: List[str], 
         limitations.append(
             f"{len(unanswered)} research question(s) produced no usable evidence (listed under unanswered questions)."
         )
+    no_evidence_from = [s for s in searched if s not in with_evidence]
+    if no_evidence_from:
+        limitations.append("No usable evidence was obtained from: " + ", ".join(no_evidence_from) + ".")
     warnings = state.get("research_warnings") or []
     if warnings:
         limitations.append(f"{len(warnings)} research action(s) failed or were skipped.")

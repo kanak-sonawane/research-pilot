@@ -1,4 +1,5 @@
 import concurrent.futures
+import re
 
 import requests
 
@@ -7,6 +8,24 @@ from app.llm_service import call_llm
 from app.web_research import extract_evidence, ResearchError
 
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
+
+# Languages recognised in a question. When a question is about exactly ONE of them, the search
+# is restricted to repositories whose main language matches. Without this, a question about
+# Python's requests returned Ruby, Rust and Go retry libraries as evidence.
+_LANGUAGES = (
+    "python", "javascript", "typescript", "java", "ruby", "php", "rust",
+    "kotlin", "swift", "scala", "elixir", "haskell", "perl", "dart",
+)
+
+
+def _language_filter(question: str) -> str:
+    """Returns " language:<name>" if the question names exactly one language, else ""."""
+    text = question.lower()
+    found = [l for l in _LANGUAGES if re.search(r"\b" + re.escape(l) + r"\b", text)]
+    # "go" is also an ordinary word, so only the capitalised name or "golang" counts.
+    if re.search(r"\bgolang\b", text) or re.search(r"\bGo\b", question):
+        found.append("go")
+    return f" language:{found[0]}" if len(found) == 1 else ""
 
 README_FETCH_LIMIT = 3
 README_CHARS = 2000
@@ -82,7 +101,7 @@ def search_github(query: str, max_results: int = 5) -> list[dict]:
     if not GITHUB_TOKEN:
         raise ResearchError("GITHUB_TOKEN is not set. Add it to backend/.env.")
 
-    github_query = _build_github_query(query)
+    github_query = _build_github_query(query) + _language_filter(query)
 
     # No "sort" param: GitHub's default is best-match relevance ranking,
     # which weighs how well the query terms actually match. Explicitly
@@ -121,7 +140,7 @@ def search_github(query: str, max_results: int = 5) -> list[dict]:
         content = f"{description}\n\n{readme_text}" if readme_text else description
 
         results.append({
-            "title": full_name,
+            "title": f"{full_name} ({item['language']})" if item.get("language") else full_name,
             "url": item.get("html_url", ""),
             "content": content,
         })

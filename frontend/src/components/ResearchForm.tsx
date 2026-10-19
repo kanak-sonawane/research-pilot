@@ -139,9 +139,17 @@ export default function ResearchForm() {
             </div>
           )}
 
-          {result.status === "failed" && (
-            <p className="text-red-600">{result.message}</p>
-          )}
+          <p
+            className={
+              result.status === "research_complete"
+                ? "text-green-700"
+                : result.status === "failed"
+                ? "text-red-600"
+                : "text-amber-700"
+            }
+          >
+            {result.message}
+          </p>
 
           {result.report && <ReportView report={result.report} />}
 
