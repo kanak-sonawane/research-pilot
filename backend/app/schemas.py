@@ -103,3 +103,22 @@ class ResearchRunResponse(BaseModel):
     sufficient: Optional[bool] = None
     research_rounds: Optional[int] = None
     report: Optional[Report] = None
+
+
+# ---- Run tracking (Phase 8) -------------------------------------------------------------
+
+class RunAccepted(BaseModel):
+    run_id: str
+    status: str  # always "running"
+
+
+class RunStatus(BaseModel):
+    run_id: str
+    # "running" while in progress, then the result's status:
+    # "research_complete" | "research_incomplete" | "failed"
+    status: str
+    stage: str
+    stage_label: str
+    round: int
+    elapsed_seconds: int
+    result: Optional[ResearchRunResponse] = None

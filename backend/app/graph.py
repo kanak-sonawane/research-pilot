@@ -14,6 +14,7 @@ from app.docs_research import research_question_docs
 from app.github_research import research_question_github
 from app.evaluation import evaluate_sufficiency, EvaluationError
 from app.report import generate_report
+from app import run_store
 
 # How many questions' research runs concurrently per source-type node.
 # (Network searches overlap; LLM calls are serialized by llm_service.)
@@ -27,6 +28,7 @@ def _timed(name: str, fn):
     """Wraps a node so each run prints how long it took."""
 
     def wrapper(state):
+        run_store.set_stage(state.get("run_id"), name, state.get("research_iteration", 0) + 1)
         started = time.perf_counter()
         result = fn(state)
         print(f"[node] {name}: {time.perf_counter() - started:.1f}s", flush=True)
